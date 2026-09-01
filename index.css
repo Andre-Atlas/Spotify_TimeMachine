@@ -1,0 +1,68 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Trocados a cada mudança de década por App.tsx */
+  --ink-decade: #be185d;
+  --accent: #ff2d95;
+  --accent-alt: #22e0ff;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0;
+  background: #e9eae5;
+  color: #16181a;
+  font-family: Archivo, ui-sans-serif, system-ui, sans-serif;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* Grão de papel: uma textura muito sutil impede que o fundo pareça
+   plano demais e amarra a página à ideia de arquivo impresso. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: .5;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.045'/%3E%3C/svg%3E");
+}
+
+::selection { background: color-mix(in srgb, var(--ink-decade) 26%, transparent); }
+
+:where(button, a, input, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--ink-decade);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+@layer components {
+  /* Etiqueta técnica: anos, durações, índices. Sempre em versalete
+     espaçado, sempre em mono — é o "chrome" do instrumento. */
+  .tag {
+    font-family: 'Space Mono', ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: #7c8285;
+  }
+  .hair { border-top: 1px solid #c6c9c1; }
+  .card-shadow { box-shadow: 0 1px 2px rgba(22,24,26,.05), 0 12px 28px -14px rgba(22,24,26,.35); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
