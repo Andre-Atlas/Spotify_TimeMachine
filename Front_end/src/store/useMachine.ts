@@ -1,7 +1,6 @@
 import { create } from 'zustand'
 import type { CuratorMessage, DecadeId, Track } from '@/types'
 import { DECADES, DECADE_MAP } from '@/data/decades'
-import { tracksOfDecade } from '@/data/tracks'
 import { audio } from '@/lib/audioEngine'
 
 interface MachineState {
@@ -17,8 +16,13 @@ interface MachineState {
   filtersOn: boolean
 
   connected: { spotify: boolean; youtube: boolean }
+  spotifyUser: { name: string; imageUrl?: string } | null
   messages: CuratorMessage[]
   savedPlaylists: Array<{ id: string; title: string; decade: DecadeId; trackIds: string[] }>
+
+  tracksMap: Partial<Record<DecadeId, Track[]>>
+  loadingTracks: boolean
+  loadDecadeTracks: (decade: DecadeId) => Promise<void>
 
   tracks: () => Track[]
   current: () => Track | undefined
@@ -36,6 +40,8 @@ interface MachineState {
   toggleFilters: () => void
 
   connect: (p: 'spotify' | 'youtube') => void
+  disconnect: (p: 'spotify' | 'youtube') => void
+  setSpotifyUser: (user: { name: string; imageUrl?: string } | null) => void
   pushMessage: (m: CuratorMessage) => void
   appendToLast: (chunk: string) => void
   finishLast: (trackIds?: string[]) => void
@@ -58,11 +64,34 @@ export const useMachine = create<MachineState>((set, get) => ({
   filtersOn: true,
 
   connected: { spotify: false, youtube: false },
+  spotifyUser: null,
   messages: [],
   savedPlaylists: [],
 
-  tracks: () => tracksOfDecade(get().decade),
-  current: () => tracksOfDecade(get().decade)[get().focused],
+  tracksMap: {},
+  loadingTracks: false,
+
+  loadDecadeTracks: async (decade) => {
+    const s = get()
+    if (s.tracksMap[decade]) return // ja carregou
+    set({ loadingTracks: true })
+    try {
+      const token = localStorage.getItem('spotify_token') || ''
+      // Passa o token no header para que o backend faca o Taste Alignment se possivel
+      const res = await fetch(`http://localhost:8000/v1/decades/${decade}/tracks?taste=1`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      })
+      if (!res.ok) throw new Error('Falha ao carregar')
+      const data = await res.json()
+      set((prev) => ({ tracksMap: { ...prev.tracksMap, [decade]: data }, loadingTracks: false }))
+    } catch (e) {
+      console.error(e)
+      set({ loadingTracks: false })
+    }
+  },
+
+  tracks: () => get().tracksMap[get().decade] || [],
+  current: () => (get().tracksMap[get().decade] || [])[get().focused],
 
   /**
    * A troca de década é uma sequência, não um set: os dígitos do Nixie
@@ -73,9 +102,11 @@ export const useMachine = create<MachineState>((set, get) => ({
     const s = get()
     if (decade === s.decade || s.shifting) return
     set({ shifting: true })
+    void get().loadDecadeTracks(decade)
+    
     window.setTimeout(() => {
       set({ decade, focused: 0, progress: 0 })
-      const t = tracksOfDecade(decade)[0]
+      const t = get().tracksMap[decade]?.[0]
       if (t && get().isPlaying) void audio.playTrack(t, profileOf(decade, get().filtersOn), 650)
       else audio.setProfile(profileOf(decade, get().filtersOn))
     }, 180)
@@ -91,14 +122,14 @@ export const useMachine = create<MachineState>((set, get) => ({
     if (focused === get().focused) return
     set({ focused, progress: 0 })
     const s = get()
-    const t = tracksOfDecade(s.decade)[focused]
+    const t = (s.tracksMap[s.decade] || [])[focused]
     // prévia com fade-in ao focar, como agulha encostando no sulco
     if (t && s.isPlaying) void audio.playTrack(t, profileOf(s.decade, s.filtersOn), 450)
   },
 
   playTrack: (i) => {
     const s = get()
-    const t = tracksOfDecade(s.decade)[i]
+    const t = (s.tracksMap[s.decade] || [])[i]
     if (!t) return
     void audio.playTrack(t, profileOf(s.decade, s.filtersOn), 500)
     set({ focused: i, isPlaying: true, progress: i === s.focused ? s.progress : 0 })
@@ -142,9 +173,11 @@ export const useMachine = create<MachineState>((set, get) => ({
     set({ filtersOn })
   },
 
-  connect: (p) => set({ connected: { ...get().connected, [p]: true } }),
+  connect: (p) => set((s) => ({ connected: { ...s.connected, [p]: true } })),
+  disconnect: (p) => set((s) => ({ connected: { ...s.connected, [p]: false }, spotifyUser: p === 'spotify' ? null : s.spotifyUser })),
+  setSpotifyUser: (user) => set({ spotifyUser: user }),
 
-  pushMessage: (m) => set({ messages: [...get().messages, m] }),
+  pushMessage: (m) => set((s) => ({ messages: [...s.messages, m] })),
 
   appendToLast: (chunk) =>
     set((s) => {

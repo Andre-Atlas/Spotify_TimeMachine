@@ -5,6 +5,7 @@ export function Footer() {
   const decade = useMachine((s) => s.decade)
   const connected = useMachine((s) => s.connected)
   const connect = useMachine((s) => s.connect)
+  const spotifyUser = useMachine((s) => s.spotifyUser)
   const d = DECADE_MAP[decade]
 
   return (
@@ -24,18 +25,30 @@ export function Footer() {
             <div className="mt-7 flex flex-wrap gap-2.5">
               <button
                 type="button"
-                onClick={() => connect('spotify')}
-                className="rounded-full px-5 py-2.5 text-[12px] font-semibold uppercase tracking-[.14em] text-paper-raised transition hover:opacity-90"
+                onClick={() => {
+                  const apiBase = import.meta.env.VITE_API_BASE_URL
+                  if (connected.spotify) {
+                    localStorage.removeItem('spotify_token')
+                    useMachine.getState().disconnect('spotify')
+                  } else if (apiBase) {
+                    window.location.href = `${apiBase}/auth/spotify/login`
+                  } else {
+                    connect('spotify')
+                  }
+                }}
+                className="rounded-full px-5 py-2.5 text-[12px] font-semibold uppercase tracking-[.14em] text-paper-raised transition hover:opacity-90 flex items-center gap-2"
                 style={{ background: d.ink }}
               >
-                {connected.spotify ? 'Spotify conectado' : 'Conectar com Spotify'}
-              </button>
-              <button
-                type="button"
-                onClick={() => connect('youtube')}
-                className="rounded-full border border-ink/25 px-5 py-2.5 text-[12px] font-semibold uppercase tracking-[.14em] text-ink transition hover:bg-paper"
-              >
-                {connected.youtube ? 'YouTube conectado' : 'Conectar YouTube Music'}
+                {connected.spotify ? (
+                  <>
+                    {spotifyUser?.imageUrl && (
+                      <img src={spotifyUser.imageUrl} alt="" className="h-5 w-5 rounded-full object-cover" />
+                    )}
+                    {spotifyUser?.name ? `${spotifyUser.name} CONECTADO(A)` : 'SPOTIFY CONECTADO'}
+                  </>
+                ) : (
+                  'Conectar com Spotify'
+                )}
               </button>
             </div>
           </div>
@@ -44,8 +57,8 @@ export function Footer() {
             {([
               ['Leitura do gosto', 'top artists, top tracks e histórico recente'],
               ['Exportação', 'playlist + capa na sua biblioteca'],
-              ['YouTube Music', 'só exportação — a API oficial não expõe histórico'],
-              ['Protótipo', 'nenhuma conta real é acessada aqui'],
+              ['Privacidade', 'Nenhuma música é salva em nossos servidores'],
+              ['Protótipo', 'Integrado com seu Spotify'],
             ] as const).map(([k, v]) => (
               <div key={k}>
                 <dt className="tag">{k}</dt>

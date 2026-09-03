@@ -1,8 +1,7 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useMachine } from '@/store/useMachine'
 import { DECADE_MAP } from '@/data/decades'
-import { tracksOfDecade } from '@/data/tracks'
 import { coverDataUrl } from '@/lib/covers'
 import { fmt } from '@/lib/format'
 import { DecadeDial } from './DecadeDial'
@@ -40,10 +39,21 @@ export function CatalogSection() {
   const focused = useMachine((s) => s.focused)
   const isPlaying = useMachine((s) => s.isPlaying)
   const filtersOn = useMachine((s) => s.filtersOn)
+  const [sortType, setSortType] = useState<'affinity' | 'popularity'>('affinity')
 
   const d = DECADE_MAP[decade]
-  const tracks = useMemo(() => tracksOfDecade(decade), [decade])
-  const ranked = useMemo(() => [...tracks].sort((a, b) => b.affinity - a.affinity), [tracks])
+  const tracks = useMachine((s) => s.tracks())
+  const loading = useMachine((s) => s.loadingTracks)
+  
+  const ranked = useMemo(() => {
+    const list = [...tracks]
+    if (sortType === 'affinity') {
+      list.sort((a, b) => b.affinity - a.affinity)
+    } else {
+      list.sort((a, b) => (a.popularity || 0) - (b.popularity || 0))
+    }
+    return list.slice(0, 15)
+  }, [tracks, sortType])
 
   return (
     <section id="catalogo" className="relative z-10 scroll-mt-16 mx-auto max-w-[1180px] px-5 pb-24 sm:px-8">
@@ -58,11 +68,18 @@ export function CatalogSection() {
             >
               {d.label}
             </h2>
-            <span className="tag whitespace-nowrap">Catálogo · mais afins primeiro</span>
+            <div className="flex gap-2 mt-2">
+              <button onClick={() => setSortType('affinity')} className={sortType === 'affinity' ? "tag !text-ink" : "tag"}>
+                Catálogo — mais afins
+              </button>
+              <button onClick={() => setSortType('popularity')} className={sortType === 'popularity' ? "tag !text-ink" : "tag"}>
+                Menos populares
+              </button>
+            </div>
           </div>
           <p className="mt-2.5 max-w-[54ch] text-[15px] text-ink-2">
             {d.tagline}. A ordem abaixo não é a das paradas da época — é a do quanto cada
-            faixa se aproxima do seu perfil sonoro.
+            faixa se aproxima do seu perfil sonoro, ou as pérolas escondidas menos populares.
           </p>
 
           <div className="mt-8">
@@ -173,7 +190,7 @@ export function CatalogSection() {
               {([
                 ['Cadeia', CHAIN[d.audio]],
                 ['Arte das capas', d.cover],
-                ['Faixas no recorte', String(tracks.length)],
+                ['Faixas no recorte', String(ranked.length)],
               ] as const).map(([k, v]) => (
                 <div key={k} className="flex gap-3">
                   <dt className="tag w-24 shrink-0">{k}</dt>

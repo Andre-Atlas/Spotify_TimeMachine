@@ -27,6 +27,7 @@ export function CuratorSection() {
   const d = DECADE_MAP[decade]
 
   const [input, setInput] = useState('')
+  const [size, setSize] = useState<number>(15)
   const [busy, setBusy] = useState(false)
   const abort = useRef<AbortController | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
@@ -41,16 +42,70 @@ export function CuratorSection() {
     const { pushMessage, appendToLast, finishLast, savePlaylist } = useMachine.getState()
     setInput('')
     setBusy(true)
-    pushMessage({ id: crypto.randomUUID(), role: 'user', content: prompt })
-    pushMessage({ id: crypto.randomUUID(), role: 'curator', content: '', streaming: true })
+    pushMessage({ id: String(Date.now() + Math.random()), role: 'user', content: prompt })
+    pushMessage({ id: String(Date.now() + Math.random() + 1), role: 'curator', content: '', streaming: true })
 
     abort.current = new AbortController()
-    const result = buildReply(prompt, decade)
-    for await (const chunk of streamText(result.text, abort.current.signal)) appendToLast(chunk)
+    
+    const apiBase = import.meta.env.VITE_API_BASE_URL
+    if (apiBase) {
+      try {
+        const res = await fetch(`${apiBase}/curate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, decade, size }),
+          signal: abort.current.signal
+        })
+        
+        if (res.ok && res.body) {
+          const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
+          while (true) {
+            const { value, done } = await reader.read()
+            if (done) break
+            
+            const lines = value.split('\n')
+            let currentEvent = ''
+            
+            for (const line of lines) {
+              if (line.startsWith('event:')) {
+                currentEvent = line.substring(6).trim()
+              } else if (line.startsWith('data:')) {
+                const dataStr = line.substring(5).trim()
+                if (dataStr) {
+                  try {
+                    const data = JSON.parse(dataStr)
+                    if (currentEvent === 'chunk' && data.text) {
+                      appendToLast(data.text)
+                    } else if (currentEvent === 'done' && data.trackIds) {
+                      finishLast(data.trackIds)
+                      savePlaylist(`${d.label} — ${prompt.slice(0, 38)}`, data.trackIds)
+                    }
+                  } catch (e) {
+                    // ignore json parse errors
+                  }
+                }
+              }
+            }
+          }
+        } else {
+          throw new Error('Backend HTTP error')
+        }
+      } catch (e) {
+        if ((e as Error).name !== 'AbortError') {
+          appendToLast('\n[Erro ao contactar curador...]')
+          finishLast([])
+        }
+      }
+    } else {
+      // Mock fallback
+      const result = buildReply(prompt, decade)
+      for await (const chunk of streamText(result.text, abort.current.signal)) appendToLast(chunk)
 
-    const ids = result.tracks.map((t) => t.id)
-    finishLast(ids)
-    savePlaylist(`${d.label} — ${prompt.slice(0, 38)}`, ids)
+      const ids = result.tracks.map((t) => t.id)
+      finishLast(ids)
+      savePlaylist(`${d.label} — ${prompt.slice(0, 38)}`, ids)
+    }
+
     setBusy(false)
   }
 
@@ -127,6 +182,18 @@ export function CuratorSection() {
                 void send(input)
               }}
             >
+              <div className="mb-3 flex items-center gap-3 px-1">
+                <span className="tag !normal-case">Tamanho da playlist:</span>
+                <label className="flex items-center gap-1.5 text-[13px] text-ink-2">
+                  <input type="radio" name="playlistSize" value="10" checked={size === 10} onChange={() => setSize(10)} className="accent-ink" /> 10
+                </label>
+                <label className="flex items-center gap-1.5 text-[13px] text-ink-2">
+                  <input type="radio" name="playlistSize" value="15" checked={size === 15} onChange={() => setSize(15)} className="accent-ink" /> 15
+                </label>
+                <label className="flex items-center gap-1.5 text-[13px] text-ink-2">
+                  <input type="radio" name="playlistSize" value="30" checked={size === 30} onChange={() => setSize(30)} className="accent-ink" /> 30
+                </label>
+              </div>
               <div className="flex items-end gap-2">
                 <textarea
                   value={input}
@@ -188,13 +255,43 @@ export function CuratorSection() {
               </ul>
               <button
                 type="button"
-                className="mt-5 w-full rounded-lg py-2.5 text-[12px] font-semibold uppercase tracking-[.14em] text-paper-raised"
+                onClick={async (e) => {
+                  const btn = e.currentTarget
+                  btn.disabled = true
+                  const origText = btn.innerText
+                  btn.innerText = 'Exportando...'
+                  try {
+                    const token = localStorage.getItem('spotify_token')
+                    const apiBase = import.meta.env.VITE_API_BASE_URL
+                    if (apiBase && token) {
+                      const res = await fetch(`${apiBase}/playlists/export`, {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({ title: playlist.title, trackIds: playlist.trackIds })
+                      })
+                      if (res.ok) {
+                        const data = await res.json()
+                        if (data.url) window.open(data.url, '_blank')
+                        btn.innerText = 'Exportado!'
+                        return
+                      }
+                    }
+                    btn.innerText = 'Erro ao exportar'
+                  } catch (e) {
+                    btn.innerText = 'Erro ao exportar'
+                  }
+                  setTimeout(() => { btn.disabled = false; btn.innerText = origText }, 2000)
+                }}
+                className="mt-5 w-full rounded-lg py-2.5 text-[12px] font-semibold uppercase tracking-[.14em] text-paper-raised disabled:opacity-50"
                 style={{ background: d.ink }}
               >
                 Exportar para o Spotify
               </button>
               <p className="tag mt-2 !text-[9px] !normal-case">
-                Capa gerada no estilo <em>{d.cover}</em>, JPEG 1400² sob 256 KB.
+                Capa oficial (ou gerada no estilo <em>{d.cover}</em>).
               </p>
             </div>
           ) : (

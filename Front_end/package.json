@@ -2,7 +2,7 @@
   "name": "the-time-machine",
   "private": true,
   "version": "0.1.0",
-  "description": "Site de descoberta musical por d\u00e9cada: carrossel em arco, rel\u00f3gio Nixie, filtros de \u00e1udio por \u00e9poca e curador em linguagem natural.",
+  "description": "Site de descoberta musical por década: carrossel em arco, relógio Nixie, filtros de áudio por época e curador em linguagem natural.",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,11 +13,13 @@
   },
   "dependencies": {
     "framer-motion": "^11.11.9",
+    "playwright": "^1.62.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zustand": "^4.5.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",

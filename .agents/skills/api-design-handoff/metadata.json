@@ -1,0 +1,5 @@
+{
+  "name": "api-design-handoff",
+  "description": "Gerar e manter a documentação estruturada da superfície da API.",
+  "triggers": ["api", "design", "documentation", "endpoints", "swagger", "openapi"]
+}

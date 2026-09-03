@@ -60,8 +60,11 @@ export interface Track {
     drums: boolean
   }
   /** 0–100: compatibilidade com o perfil de gosto do usuário. */
+  popularity: number
   affinity: number
   reason?: string
+  audioUrl?: string | null
+  coverUrl?: string | null
 }
 
 export interface Trivia {

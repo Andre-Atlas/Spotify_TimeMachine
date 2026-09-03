@@ -286,10 +286,26 @@ export class AudioEngine {
 
   /* ── Sequenciador ─────────────────────────────────────────────── */
 
+  private audioEl: HTMLAudioElement | null = null
+  private audioSrc: MediaElementAudioSourceNode | null = null
+
   async playTrack(track: Track, profile: AudioProfile, fadeMs = 600): Promise<void> {
     await this.init()
     if (!this.ctx) return
     this.stopVoices()
+    
+    // Stop and cleanup previous audio element
+    if (this.audioEl) {
+      this.audioEl.pause()
+      this.audioEl.removeAttribute('src')
+      this.audioEl.load()
+      this.audioEl = null
+    }
+    if (this.audioSrc) {
+      this.audioSrc.disconnect()
+      this.audioSrc = null
+    }
+
     this.track = track
     if (profile !== this.profile) this.buildChain(profile)
 
@@ -298,6 +314,29 @@ export class AudioEngine {
     this.master.gain.setValueAtTime(0.0001, now)
     this.master.gain.linearRampToValueAtTime(this.volume, now + fadeMs / 1000)
 
+    const apiBase = import.meta.env.VITE_API_BASE_URL
+    const audioUrl = apiBase ? `${apiBase}/tracks/${track.id}/audio` : track.audioUrl
+
+    if (audioUrl) {
+      // Play real audio
+      this.audioEl = new Audio(audioUrl)
+      this.audioEl.crossOrigin = 'anonymous'
+      this.audioEl.loop = true
+      
+      this.audioSrc = this.ctx.createMediaElementSource(this.audioEl)
+      this.audioSrc.connect(this.insertIn)
+      
+      this.audioEl.play().catch(() => {
+        // Fallback to synth if play fails
+        this.startSynthScheduler(now)
+      })
+    } else {
+      // Fallback to procedural synth
+      this.startSynthScheduler(now)
+    }
+  }
+
+  private startSynthScheduler(now: number) {
     this.nextNoteTime = now + 0.08
     this.step = 0
     if (this.timer !== null) window.clearInterval(this.timer)

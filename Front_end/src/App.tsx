@@ -12,7 +12,12 @@ import { audio } from '@/lib/audioEngine'
 
 export default function App() {
   const decade = useMachine((s) => s.decade)
+  const loadDecadeTracks = useMachine((s) => s.loadDecadeTracks)
   const d = DECADE_MAP[decade]
+
+  useEffect(() => {
+    void loadDecadeTracks('80s')
+  }, [])
 
   /* Uma fonte, dois consumidores: os tokens de cor da década alimentam
      tanto o CSS quanto a arte gerada das capas. */

@@ -465,6 +465,11 @@ export function coverCanvas(track: Track, style: CoverStyle, S = 512): HTMLCanva
 }
 
 export function coverDataUrl(track: Track, style: CoverStyle, S = 256): string {
+  const apiBase = import.meta.env.VITE_API_BASE_URL
+  const isRealTrack = track.id.split('-')[1]?.length > 5
+  const coverUrl = apiBase && isRealTrack ? `${apiBase}/tracks/${track.id}/cover` : track.coverUrl
+
+  if (coverUrl) return coverUrl
   return coverCanvas(track, style, S).toDataURL('image/jpeg', 0.82)
 }
 

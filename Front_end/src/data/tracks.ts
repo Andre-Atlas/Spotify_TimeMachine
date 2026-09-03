@@ -1,4 +1,5 @@
-import type { DecadeId, Track } from '@/types'
+import type { Track, DecadeId } from '@/types'
+import SEED_TRACKS from './seed_tracks.json'
 import { hash } from '@/lib/math'
 
 type Seed = [
@@ -134,8 +135,18 @@ export const TRACKS: Track[] = (Object.keys(SEEDS) as DecadeId[]).flatMap((decad
   }),
 )
 
-export const TRACK_MAP = Object.fromEntries(TRACKS.map((t) => [t.id, t])) as Record<string, Track>
+export const TRACK_MAP: Record<string, Track> = {}
+;(SEED_TRACKS as unknown as Track[]).forEach((t) => {
+  TRACK_MAP[t.id] = { ...t, affinity: affinityFor(t.features) }
+})
 
 export function tracksOfDecade(decade: DecadeId): Track[] {
-  return TRACKS.filter((t) => t.decade === decade)
+  const tracks = (SEED_TRACKS as unknown as Track[]).filter((t) => t.decade === decade)
+
+  return tracks.map((t) => ({
+    ...t,
+    affinity: affinityFor(t.features),
+  }))
 }
+
+// force reload 09/01/2026 22:59:54

@@ -63,18 +63,19 @@ export function PlayerBar() {
             </span>
             <label className="relative flex-1">
               <span className="sr-only">Posição na faixa</span>
+              <span className="pointer-events-none absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-paper-sunk" />
+              <span
+                className="pointer-events-none absolute left-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full"
+                style={{ width: `${progress * 100}%`, background: d.ink }}
+              />
               <input
                 type="range"
                 min={0}
                 max={1000}
                 value={Math.round(progress * 1000)}
                 onChange={(e) => useMachine.getState().seek(Number(e.target.value) / 1000)}
-                className="h-4 w-full cursor-pointer appearance-none bg-transparent"
-              />
-              <span className="pointer-events-none absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-paper-sunk" />
-              <span
-                className="pointer-events-none absolute left-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full"
-                style={{ width: `${progress * 100}%`, background: d.ink }}
+                className="relative z-10 h-4 w-full cursor-pointer appearance-none bg-transparent"
+                style={{ accentColor: d.ink }}
               />
             </label>
             <span className="font-data text-[10px] tabular-nums text-ink-3">
