@@ -1,0 +1,5 @@
+{
+  "name": "pytest-modern-guidance",
+  "description": "Garantir que o backend possua testes robustos que rodem inteiramente offline.",
+  "triggers": ["pytest", "test", "mock", "fixture", "alembic"]
+}

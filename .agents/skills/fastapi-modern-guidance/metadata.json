@@ -1,0 +1,5 @@
+{
+  "name": "fastapi-modern-guidance",
+  "description": "Garantir padrões sólidos na construção da API (BFF).",
+  "triggers": ["fastapi", "backend", "api", "bff", "python"]
+}
