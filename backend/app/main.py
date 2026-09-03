@@ -10,34 +10,37 @@ settings = Settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Registra providers no startup."""
-    # Fase 1: sempre carrega mocks como fallback
-    from app.providers.mock import MockTasteSource, MockTrackCatalog, MockCurator
-    
-    taste = MockTasteSource()
-    catalog: object
-    curator: object
+    """Registra providers no startup.
 
-    if settings.SPOTIFY_CLIENT_ID and settings.SPOTIFY_CLIENT_SECRET and settings.GROQ_API_KEY:
+    Desde a Fase 4, o curador é sempre o MLCurator (determinístico, sem
+    credenciais) — deixou de ser condicionado a settings.has_groq. Catálogo
+    e gosto reais dependem só do Spotify: o Groq virou um enriquecimento
+    opcional de features (estimate_features já degrada sozinho para
+    DEFAULT_FEATURES quando a chave falta ou expira), não um requisito duro.
+    Isso também é por que settings.use_mock hoje só olha has_spotify.
+    """
+    from app.providers.mock import MockTasteSource, MockTrackCatalog
+    from app.providers.ml_curator import MLCurator
+
+    taste: object
+    catalog: object
+
+    if settings.has_spotify:
         from app.providers.spotify_catalog import SpotifyTrackCatalog
+        from app.providers.spotify_taste import SpotifyTasteSource
+
         catalog = SpotifyTrackCatalog(
             spotify_client_id=settings.SPOTIFY_CLIENT_ID,
             spotify_client_secret=settings.SPOTIFY_CLIENT_SECRET,
-            groq_api_key=settings.GROQ_API_KEY
+            groq_api_key=settings.GROQ_API_KEY,
         )
+        taste = SpotifyTasteSource(groq_api_key=settings.GROQ_API_KEY)
     else:
         catalog = MockTrackCatalog()
-    
-    # Se tiver chave Groq, usar curador real
-    if settings.GROQ_API_KEY:
-        try:
-            from app.providers.curator_llm import GroqCurator
-            curator = GroqCurator(api_key=settings.GROQ_API_KEY)
-        except Exception:
-            curator = MockCurator()
-    else:
-        curator = MockCurator()
-    
+        taste = MockTasteSource()
+
+    curator = MLCurator()
+
     register_providers(taste=taste, catalog=catalog, curator=curator)
     yield
 
@@ -50,7 +53,7 @@ app = FastAPI(
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*'],
+    allow_origins=settings.cors_origins,
     allow_methods=['*'],
     allow_headers=['*'],
 )
@@ -66,4 +69,9 @@ app.include_router(tracks.router, prefix='/v1')
 
 @app.get('/healthz')
 async def healthz():
-    return {'status': 'ok', 'mock': settings.use_mock}
+    return {
+        'status': 'ok',
+        'mock': settings.use_mock,
+        'has_spotify': settings.has_spotify,
+        'has_groq': settings.has_groq,
+    }

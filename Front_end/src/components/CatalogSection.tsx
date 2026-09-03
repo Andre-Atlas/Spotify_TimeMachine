@@ -84,6 +84,11 @@ export function CatalogSection() {
 
           <div className="mt-8">
             <div className="hair" />
+            {loading && ranked.length === 0 && (
+              <p className="py-6 text-center font-data text-[12px] uppercase tracking-wide text-ink-2">
+                Carregando faixas…
+              </p>
+            )}
             <AnimatePresence mode="wait">
               <motion.ul
                 key={decade}

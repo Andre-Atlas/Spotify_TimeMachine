@@ -1,6 +1,6 @@
 """Endpoint SSE do curador musical."""
 import json
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from sse_starlette.sse import EventSourceResponse
 
 from app.schemas.curator import CurateRequest
@@ -13,6 +13,7 @@ router = APIRouter(tags=['curator'])
 @router.post('/curate')
 async def curate(
     req: CurateRequest,
+    authorization: str | None = Header(None),
     catalog: TrackCatalog = Depends(get_catalog),
     taste_source: TasteSource = Depends(get_taste_source),
     curator: CuratorProvider = Depends(get_curator),
@@ -23,8 +24,11 @@ async def curate(
       - event: chunk  → {"text": "..."}
       - event: done   → {"trackIds": [...]}
     """
-    taste = await taste_source.get_taste()
-    raw_tracks = await catalog.tracks_for_decade(req.decade)
+    # Mesmo padrão de decades.py — sem isso a curadoria sempre usava o
+    # perfil demo, mesmo com usuário Spotify autenticado.
+    user_token = authorization.split(" ")[1] if authorization and authorization.startswith("Bearer ") else None
+    taste = await taste_source.get_taste(user_token)
+    raw_tracks = await catalog.tracks_for_decade(req.decade, user_token)
     
     # Enriquecer com afinidade
     candidates = []

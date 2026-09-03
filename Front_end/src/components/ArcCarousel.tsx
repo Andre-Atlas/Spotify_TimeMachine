@@ -40,6 +40,8 @@ const norm = (a: number) => ((a + Math.PI * 3) % (Math.PI * 2)) - Math.PI
 export function ArcCarousel() {
   const decade = useMachine((s) => s.decade)
   const goToDecade = useMachine((s) => s.goToDecade)
+  const tracksMap = useMachine((s) => s.tracksMap)
+  const loadDecadeTracks = useMachine((s) => s.loadDecadeTracks)
 
   const wrap = useRef<HTMLDivElement>(null)
   const cards = useRef<HTMLDivElement[]>([])
@@ -65,18 +67,36 @@ export function ArcCarousel() {
   }, [])
 
   /** Cada repetição mostra uma faixa diferente da década — o arco fica
-   *  variado em vez de exibir a mesma arte três vezes. */
+   *  variado em vez de exibir a mesma arte três vezes.
+   *
+   *  Usa as faixas reais carregadas via backend (tracksMap) quando já
+   *  disponíveis; cai no mock estático só enquanto aquela década ainda não
+   *  respondeu — evita o arco nascer com slots vazios e mostra dados reais
+   *  assim que chegam, sem esperar o usuário girar até lá. Antes disso, o
+   *  arco sempre lia de `tracksOfDecade` (mock), mesmo depois do catálogo
+   *  abaixo já estar mostrando faixas reais — era a causa da desconexão
+   *  entre o carrossel e o CatalogSection.
+   */
   const slots = useMemo(
     () =>
       Array.from({ length: COUNT }, (_, i) => {
         const d = DECADES[i % DECADES.length]
         const rep = Math.floor(i / DECADES.length)
-        const list = tracksOfDecade(d.id)
+        const list = tracksMap[d.id] ?? tracksOfDecade(d.id)
         const track = list[(rep * 3) % list.length]
         return { d, track, cover: coverDataUrl(track, d.cover, 256) }
       }),
-    [],
+    [tracksMap],
   )
+
+  /** O arco mostra as 7 décadas de uma vez, não só a atual — sem isso, seis
+   *  das sete ficariam presas no fallback mock até o usuário girar até lá.
+   *  loadDecadeTracks já ignora décadas já carregadas, então isto é seguro
+   *  de chamar de novo mesmo com o prefetch de vizinhas do goToDecade. */
+  useEffect(() => {
+    DECADES.forEach((d) => void loadDecadeTracks(d.id))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   /* ── entrada ──────────────────────────────────────────────────── */
   useEffect(() => {

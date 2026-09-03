@@ -3,7 +3,6 @@ from pydantic import BaseModel
 import httpx
 
 from app.deps import get_catalog
-from app.providers.mock import MockTrackCatalog
 
 router = APIRouter(prefix="/playlists", tags=["playlists"])
 
@@ -18,11 +17,18 @@ async def export_playlist(request: Request, payload: ExportRequest, catalog = De
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
         
     token = auth_header.split(" ")[1]
-    
-    if not isinstance(catalog, MockTrackCatalog):
-        catalog = MockTrackCatalog()
-        
-    local_tracks = [t for t in catalog._tracks if t["id"] in payload.trackIds]
+
+    # Antes disso forçava sempre MockTrackCatalog() aqui, então IDs vindos
+    # do catálogo real do Spotify (ex: "80s-3xK9...") nunca batiam com os
+    # IDs do seed mock ("80s-0") e o export quebrava com 404 sempre que o
+    # app estava rodando em modo real. get_track() já existe nos dois
+    # providers (mock e Spotify) — usar o catálogo injetado de verdade.
+    local_tracks = []
+    for tid in payload.trackIds:
+        t = catalog.get_track(tid)
+        if t:
+            local_tracks.append(t)
+
     if not local_tracks:
         raise HTTPException(status_code=404, detail="No valid tracks found in catalog")
         
@@ -50,9 +56,17 @@ async def export_playlist(request: Request, payload: ExportRequest, catalog = De
             
         playlist_id = create_resp.json()["id"]
         
-        # Buscar as URIs no Spotify
+        # Resolver URIs: faixas que já vieram do catálogo Spotify carregam
+        # spotify_uri direto (evita uma busca redundante); só faixas do
+        # catálogo mock (sem esse campo) caem no fallback de busca por
+        # título/artista.
         spotify_uris = []
         for t in local_tracks:
+            uri = t.get("spotify_uri")
+            if uri:
+                spotify_uris.append(uri)
+                continue
+
             query = f"track:{t['title']} artist:{t['artist']}"
             search_resp = await client.get(
                 "https://api.spotify.com/v1/search",

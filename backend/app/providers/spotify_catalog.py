@@ -1,23 +1,55 @@
 """TrackCatalog Provider real usando Spotify API + Groq."""
 import base64
-import json
-import random
+import zlib
 import asyncio
-from typing import AsyncIterator
+from pathlib import Path
 
 import httpx
 
 from app.providers.base import TrackCatalog
 from app.models.decade import DECADE_MAP
+from app.services.groq_features import estimate_features, DEFAULT_FEATURES
+from app.services.cache import TTLCache
+
+# 6h: décadas não mudam, mas o resultado de busca pode variar levemente
+# entre execuções do Spotify — TTL evita tanto "nunca expira" (débito
+# antigo) quanto "expira toda hora" (custa 4 buscas + 1 chamada Groq).
+CACHE_TTL_SECONDS = 6 * 3600
+CACHE_PATH = Path(__file__).parent.parent / "data" / "cache" / "catalog_cache.json"
+
+
+def _stable_offset(decade_id: str, span: int = 190) -> int:
+    """Offset determinístico por década — substitui random.randint(0, 300).
+
+    O aleatório antigo fazia o resultado mudar a cada cold start e podia
+    superar o total de resultados de uma busca estreita (gênero + década),
+    devolvendo lista vazia sem motivo. crc32 é estável entre processos
+    (diferente de hash() de str, que tem seed aleatória por padrão).
+    """
+    return zlib.crc32(decade_id.encode()) % span
+
 
 class SpotifyTrackCatalog(TrackCatalog):
-    def __init__(self, spotify_client_id: str, spotify_client_secret: str, groq_api_key: str):
+    def __init__(
+        self,
+        spotify_client_id: str,
+        spotify_client_secret: str,
+        groq_api_key: str,
+        cache_ttl_seconds: float = CACHE_TTL_SECONDS,
+    ):
         self.client_id = spotify_client_id
         self.client_secret = spotify_client_secret
         self.groq_api_key = groq_api_key
-        self._cache: dict[str, list[dict]] = {}
+        self._cache = TTLCache(cache_ttl_seconds, persist_path=CACHE_PATH)
         self._all_tracks: dict[str, dict] = {}
         self._token: str | None = None
+
+        # repovoa o índice de lookup por id com o que sobreviveu no disco,
+        # senão get_track() (usado no export de playlist) fica vazio até a
+        # primeira requisição de cada década depois de um restart
+        for track_list in self._cache.values():
+            for t in track_list:
+                self._all_tracks[t["id"]] = t
 
     async def _get_token(self) -> str:
         if self._token:
@@ -54,7 +86,7 @@ class SpotifyTrackCatalog(TrackCatalog):
     async def _fetch_from_spotify(self, decade_id: str, user_token: str | None = None) -> list[dict]:
         token = await self._get_token()
         
-        offset = random.randint(0, 300)
+        offset = _stable_offset(decade_id)
         
         decade_info = DECADE_MAP.get(decade_id)
         if not decade_info:
@@ -103,47 +135,13 @@ class SpotifyTrackCatalog(TrackCatalog):
             return items
 
     async def _enrich_with_groq(self, spotify_tracks: list[dict]) -> dict[str, dict]:
-        track_list_str = "\n".join([f"{t['id']}: {t['name']} - {t['artists'][0]['name']}" for t in spotify_tracks])
-        
-        prompt = f"""Estime os valores acusticos (0.0 a 1.0) e a popularidade (0 a 100) para as seguintes musicas:
-{track_list_str}
-
-Responda SOMENTE com um JSON valido no formato:
-{{
-  "features": {{
-     "ID_DA_MUSICA": {{"energy": 0.8, "valence": 0.5, "danceability": 0.6, "acousticness": 0.1, "popularity": 85}},
-     ...
-  }}
-}}
-"""
-        headers = {
-            "Authorization": f"Bearer {self.groq_api_key}",
-            "Content-Type": "application/json"
-        }
-        req_data = {
-            "model": "openai/gpt-oss-20b",
-            "messages": [{"role": "user", "content": prompt}],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.3
-        }
-        
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            res = await client.post("https://api.groq.com/openai/v1/chat/completions", json=req_data, headers=headers)
-            if res.status_code == 200:
-                try:
-                    content = res.json()["choices"][0]["message"]["content"]
-                    data = json.loads(content)
-                    return data.get("features", {})
-                except Exception as e:
-                    print("Error parsing Groq response:", e)
-            else:
-                print("Groq API Error:", res.text)
-        return {}
+        return await estimate_features(self.groq_api_key, spotify_tracks)
 
     async def tracks_for_decade(self, decade_id: str, user_token: str | None = None) -> list[dict]:
         cache_key = f"{decade_id}_{user_token[:10] if user_token else 'anon'}"
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
             
         print(f"Buscando faixas reais para a decada {decade_id} no Spotify...", flush=True)
         items = await self._fetch_from_spotify(decade_id, user_token)
@@ -156,9 +154,7 @@ Responda SOMENTE com um JSON valido no formato:
         processed = []
         for t in items:
             tid = t["id"]
-            feat = features_map.get(tid, {
-                "energy": 0.5, "valence": 0.5, "danceability": 0.5, "acousticness": 0.5, "popularity": 50
-            })
+            feat = features_map.get(tid, DEFAULT_FEATURES)
             
             track_dict = {
                 "id": f"{decade_id}-{tid}",
@@ -193,7 +189,7 @@ Responda SOMENTE com um JSON valido no formato:
         if not processed:
             raise Exception("No tracks were processed successfully.")
             
-        self._cache[cache_key] = processed
+        self._cache.set(cache_key, processed)
         return processed
 
     async def search_specific_track(self, query: str, decade_id: str) -> dict | None:
@@ -212,9 +208,7 @@ Responda SOMENTE com um JSON valido no formato:
             t = items[0]
             
             features_map = await self._enrich_with_groq([t])
-            feat = features_map.get(t["id"], {
-                "energy": 0.5, "valence": 0.5, "danceability": 0.5, "acousticness": 0.5, "popularity": 50
-            })
+            feat = features_map.get(t["id"], DEFAULT_FEATURES)
             
             track_dict = {
                 "id": f"{decade_id}-{t['id']}",

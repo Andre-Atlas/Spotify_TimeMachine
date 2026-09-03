@@ -79,26 +79,26 @@ npm run dev
 
 ## ⚠️ 4. Observações Críticas & Débitos Técnicos Identificados
 
-### 🔴 Observação 1: Latência no Carregamento de Faixas (Performance)
+> **Atualização:** as três observações abaixo e os passos 1–3 da seção 6 foram
+> implementados. Texto original preservado para contexto; ver anotações
+> "✅ Resolvido" em cada item.
+
+### 🔴 Observação 1: Latência no Carregamento de Faixas (Performance) — ✅ Resolvido
 - **Problema:** A troca de décadas pode demorar entre 3s e 6s.
 - **Causa Raiz:** O backend faz 4 requisições HTTP sequenciais para o Spotify Search + 1 requisição para o LLM estimar features acústicas de 20 faixas antes de responder o endpoint `/tracks`.
-- **Ação Necessária:**
-  - Adicionar cache persistente em disco/memória (SQLite, Redis ou JSON estruturado com TTL).
-  - Implementar pré-carregamento (prefetch) das décadas vizinhas no frontend ao parar em um dial.
-  - Eliminar a inferência do LLM no catálogo primário através do motor de Machine Learning offline/local.
+- **Ação tomada:** `TTLCache` com persistência em JSON (`app/services/cache.py`, TTL de 6h) substituindo os dicts em memória sem expiração de `SpotifyTrackCatalog` e `SpotifyTasteSource`; offset de busca passou de aleatório (`random.randint(0,300)`, podia estourar resultados de queries estreitas) para determinístico por década (`crc32`). Prefetch de décadas vizinhas adicionado em `useMachine.ts::goToDecade` e no mount de `ArcCarousel.tsx`.
 
-### 🔴 Observação 2: Desconexão entre Músicas e Capas no Carrossel em Arco
+### 🔴 Observação 2: Desconexão entre Músicas e Capas no Carrossel em Arco — ✅ Resolvido
 - **Problema:** O carrossel em arco (`ArcCarousel.tsx`) renderiza capas procedurais/estáticas de `src/data/tracks.ts` (ex: `50s-0`), enquanto o catálogo logo abaixo exibe as músicas reais do Spotify.
-- **Causa Raiz:** `ArcCarousel.tsx` foi construído antes da integração dinâmica com o backend e ainda consome `tracksOfDecade(d.id)` de um arquivo mock síncrono.
-- **Ação Necessária:**
-  - Refatorar `ArcCarousel.tsx` para consumir o `tracksMap` da store `useMachine` ou um endpoint dedicado de destaques de cada década (`GET /v1/decades` com `top_track_cover`).
-  - Sincronizar visualmente o cartão do topo do carrossel com a música em reprodução no `PlayerBar`.
+- **Ação tomada:** `slots` em `ArcCarousel.tsx` agora lê de `tracksMap` (store `useMachine`) quando a década já carregou, caindo no mock só como fallback de loading. O componente dispara `loadDecadeTracks` para as 7 décadas no mount.
 
-### 🔴 Observação 3: Substituição da Curadoria LLM pelo Motor de ML (Cosine Similarity)
-- **Problema:** A curadoria via LLM sofre com alta latência (streaming lento), dependência de modelos de terceiros que são descontinuados (ex: `llama-3.1-70b` e `llama-3.3-70b` sofreram depreciação recente no Groq) e custo desnecessário para uma tarefa puramente acústica.
-- **Diretriz:** Substituir a curadoria LLM por **Filtragem Baseada em Conteúdo (Content-Based Filtering)** utilizando **Similaridade de Cosseno** sobre as *Audio Features* do Spotify.
+### 🔴 Observação 3: Substituição da Curadoria LLM pelo Motor de ML (Cosine Similarity) — ✅ Resolvido
+- **Diretriz:** Substituir a curadoria LLM por **Filtragem Baseada em Conteúdo (Content-Based Filtering)** utilizando **Similaridade de Cosseno** sobre as *Audio Features*.
+- **Ação tomada:** `app/services/ml_recommender.py` (`MusicRecommender`: centroide + `sklearn.metrics.pairwise.cosine_similarity` + MMR para diversidade) e `app/providers/ml_curator.py` (`MLCurator`, sem dependência de API externa). `app/main.py` registra `MLCurator` incondicionalmente — não depende mais de `GROQ_API_KEY`. `curator_llm.py` (Groq) não foi apagado, só deixou de ser o caminho padrão.
 
 ---
+
+
 
 ## 🔬 5. Análise de Viabilidade Técnica: Motor de ML (Audio Features + Cosine Similarity)
 

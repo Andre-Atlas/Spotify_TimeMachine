@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: the-time-machine-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      # Preencher no dashboard do Render (Environment) ou via `render env set` —
+      # segredos não ficam neste arquivo de propósito.
+      - key: SPOTIFY_CLIENT_ID
+        sync: false
+      - key: SPOTIFY_CLIENT_SECRET
+        sync: false
+      - key: SPOTIFY_REDIRECT_URI
+        sync: false
+        # ex: https://the-time-machine-api.onrender.com/v1/auth/spotify/callback
+      - key: GROQ_API_KEY
+        sync: false
+        # opcional — ver .env.example
+      - key: FRONTEND_ORIGIN
+        sync: false
+        # ex: https://the-time-machine.vercel.app (ou várias, separadas por vírgula)
+
+# Notas de operação:
+# - plan: free dorme após ~15 min de inatividade — primeira requisição depois
+#   disso leva 30-50s (cold start). Trocar para "starter" remove isso.
+# - free tier não inclui disco persistente: app/data/cache/*.json não
+#   sobrevive a redeploys nem a "sleeps" longos. O cache com TTL continua
+#   funcionando dentro de uma execução viva do processo — só reseta mais
+#   often que o desejável sem o add-on de Disk pago.
+# - roda com 1 worker (padrão do CMD do Dockerfile) de propósito: o cache
+#   e o catálogo em memória (SpotifyTrackCatalog._all_tracks) não são
+#   compartilhados entre processos. Não escalar horizontalmente sem
+#   introduzir Redis/banco compartilhado primeiro.

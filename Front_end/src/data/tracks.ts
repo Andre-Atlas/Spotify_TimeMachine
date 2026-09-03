@@ -130,6 +130,11 @@ export const TRACKS: Track[] = (Object.keys(SEEDS) as DecadeId[]).flatMap((decad
       palette: [s[10], s[11]] as [string, string],
       features,
       music,
+      // Sem correspondente real no seed manual (o backend usa a popularidade
+      // que a Groq estima); deriva um valor plausível e determinístico do id
+      // — mesma faixa, sempre a mesma popularidade, sem precisar inventar
+      // 56 números à mão.
+      popularity: Math.round(40 + hash(`${id}-pop`) * 55),
       affinity: affinityFor(features),
     }
   }),

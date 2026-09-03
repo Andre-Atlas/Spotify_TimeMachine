@@ -77,8 +77,9 @@ export const useMachine = create<MachineState>((set, get) => ({
     set({ loadingTracks: true })
     try {
       const token = localStorage.getItem('spotify_token') || ''
+      const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/v1'
       // Passa o token no header para que o backend faca o Taste Alignment se possivel
-      const res = await fetch(`http://localhost:8000/v1/decades/${decade}/tracks?taste=1`, {
+      const res = await fetch(`${apiBase}/decades/${decade}/tracks?taste=1`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       })
       if (!res.ok) throw new Error('Falha ao carregar')
@@ -103,12 +104,22 @@ export const useMachine = create<MachineState>((set, get) => ({
     if (decade === s.decade || s.shifting) return
     set({ shifting: true })
     void get().loadDecadeTracks(decade)
-    
+
     window.setTimeout(() => {
       set({ decade, focused: 0, progress: 0 })
       const t = get().tracksMap[decade]?.[0]
       if (t && get().isPlaying) void audio.playTrack(t, profileOf(decade, get().filtersOn), 650)
       else audio.setProfile(profileOf(decade, get().filtersOn))
+
+      // Pré-carrega as décadas vizinhas: quando a pessoa continuar girando o
+      // arco/dial, a próxima parada já está (ou está a caminho de estar)
+      // pronta — loadDecadeTracks já ignora décadas que já carregaram, então
+      // isso não duplica chamadas.
+      const idx = DECADES.findIndex((d) => d.id === decade)
+      const nextId = DECADES[(idx + 1) % DECADES.length].id
+      const prevId = DECADES[(idx - 1 + DECADES.length) % DECADES.length].id
+      void get().loadDecadeTracks(nextId)
+      void get().loadDecadeTracks(prevId)
     }, 180)
     window.setTimeout(() => set({ shifting: false }), 620)
   },

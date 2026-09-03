@@ -9,7 +9,6 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
-REDIRECT_URI = "http://127.0.0.1:8000/v1/auth/spotify/callback"
 
 @router.get("/spotify/login")
 async def login_spotify(request: Request):
@@ -17,17 +16,17 @@ async def login_spotify(request: Request):
         raise HTTPException(status_code=500, detail="Missing SPOTIFY_CLIENT_ID")
     
     # Guardar a origem do usuário no state para redirecionar de volta corretamente
-    referer = request.headers.get("referer", settings.FRONTEND_ORIGIN)
+    referer = request.headers.get("referer", settings.cors_origins[0])
     # Extrair apenas origin (scheme + host + port)
     parsed = urllib.parse.urlparse(referer)
-    user_origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else settings.FRONTEND_ORIGIN
+    user_origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else settings.cors_origins[0]
     
     scope = "playlist-modify-public playlist-modify-private user-top-read"
     params = {
         "response_type": "code",
         "client_id": settings.SPOTIFY_CLIENT_ID,
         "scope": scope,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": settings.spotify_redirect_uri,
         "state": user_origin,  # Guardar a origem real do usuário
         "show_dialog": "true", # Forçar a exibição da tela de login para permitir troca de conta
     }
@@ -38,7 +37,7 @@ async def login_spotify(request: Request):
 async def callback_spotify(request: Request, code: str = None, error: str = None, state: str = ""):
     if error:
         # Se o Spotify negou o acesso (ex: usuário não está na whitelist)
-        frontend_url = state or settings.FRONTEND_ORIGIN
+        frontend_url = state or settings.cors_origins[0]
         return RedirectResponse(f"{frontend_url}/#error={error}")
         
     if not code:
@@ -50,7 +49,7 @@ async def callback_spotify(request: Request, code: str = None, error: str = None
     data = {
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": settings.spotify_redirect_uri,
     }
     
     async with httpx.AsyncClient() as client:
@@ -69,5 +68,5 @@ async def callback_spotify(request: Request, code: str = None, error: str = None
     access_token = token_data.get("access_token")
     
     # Redirecionar para a origem real do usuário (guardada no state)
-    frontend_url = state or settings.FRONTEND_ORIGIN
+    frontend_url = state or settings.cors_origins[0]
     return RedirectResponse(f"{frontend_url}/#token={access_token}")
