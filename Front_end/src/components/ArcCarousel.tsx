@@ -92,19 +92,22 @@ export function ArcCarousel() {
   /** O arco mostra a década atual + as duas vizinhas primeiro — as outras
    *  quatro ainda caem no fallback mock até o usuário girar perto delas,
    *  mas carregam progressivamente pelo prefetch de vizinhas do
-   *  goToDecade. Antes isto disparava as 7 de uma vez: 140 faixas passando
-   *  por estimativa de features via Groq num único burst, estourando o
-   *  rate limit da chave (visto em produção) e fazendo lotes inteiros
-   *  caírem no fallback neutro — o que também achatava a ordenação por
-   *  afinidade/popularidade, já que todo mundo empatava. */
+   *  goToDecade. Antes isto disparava as 3 juntas no mount — a atual e as
+   *  duas vizinhas ao mesmo tempo — e combinado com outras pessoas abrindo
+   *  o site na mesma janela de tempo isso ajudava a estourar a cota do
+   *  Spotify (429 QUOTA_EXCEEDED visto em produção). Escalona: a época
+   *  atual entra na hora, as vizinhas ficam 700ms/1400ms atrás. */
   useEffect(() => {
     const idx = DECADES.findIndex((d) => d.id === decade)
-    const ids = [
-      decade,
-      DECADES[(idx + 1) % DECADES.length].id,
-      DECADES[(idx - 1 + DECADES.length) % DECADES.length].id,
-    ]
-    ids.forEach((id) => void loadDecadeTracks(id))
+    const nextId = DECADES[(idx + 1) % DECADES.length].id
+    const prevId = DECADES[(idx - 1 + DECADES.length) % DECADES.length].id
+    void loadDecadeTracks(decade)
+    const t1 = window.setTimeout(() => void loadDecadeTracks(nextId), 700)
+    const t2 = window.setTimeout(() => void loadDecadeTracks(prevId), 1400)
+    return () => {
+      window.clearTimeout(t1)
+      window.clearTimeout(t2)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

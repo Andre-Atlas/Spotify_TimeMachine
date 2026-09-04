@@ -113,13 +113,16 @@ export const useMachine = create<MachineState>((set, get) => ({
 
       // Pré-carrega as décadas vizinhas: quando a pessoa continuar girando o
       // arco/dial, a próxima parada já está (ou está a caminho de estar)
-      // pronta — loadDecadeTracks já ignora décadas que já carregaram, então
-      // isso não duplica chamadas.
+      // pronta — loadDecadeTracks já ignora décadas já carregadas, então
+      // isso não duplica chamadas. Escalonado (não as duas de uma vez):
+      // três décadas em paralelo a cada navegação era parte do que
+      // estourava a cota do Spotify em produção quando várias pessoas
+      // usavam o site ao mesmo tempo.
       const idx = DECADES.findIndex((d) => d.id === decade)
       const nextId = DECADES[(idx + 1) % DECADES.length].id
       const prevId = DECADES[(idx - 1 + DECADES.length) % DECADES.length].id
       void get().loadDecadeTracks(nextId)
-      void get().loadDecadeTracks(prevId)
+      window.setTimeout(() => void get().loadDecadeTracks(prevId), 900)
     }, 180)
     window.setTimeout(() => set({ shifting: false }), 620)
   },

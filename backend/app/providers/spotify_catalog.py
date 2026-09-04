@@ -51,6 +51,7 @@ class SpotifyTrackCatalog(TrackCatalog):
         self._all_tracks: dict[str, dict] = {}
         self._token: str | None = None
         self._token_exp: float = 0.0
+        self._locks: dict[str, asyncio.Lock] = {}
 
         # repovoa o índice de lookup por id com o que sobreviveu no disco,
         # senão get_track() (usado no export de playlist) fica vazio até a
@@ -86,7 +87,7 @@ class SpotifyTrackCatalog(TrackCatalog):
             return self._token
 
     async def _get_user_top_genres(self, user_token: str) -> list[str]:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             res = await client.get(
                 "https://api.spotify.com/v1/me/top/artists?limit=10",
                 headers={"Authorization": f"Bearer {user_token}"}
@@ -97,14 +98,22 @@ class SpotifyTrackCatalog(TrackCatalog):
                 for a in artists:
                     for g in a.get("genres", []):
                         genres.add(g)
-                return list(genres)[:3] # top 3 genres
+                return sorted(genres)[:3]  # top 3 genres, ordem estável
         return []
 
     async def _search(self, client: httpx.AsyncClient, query: str, offset: int) -> list[dict]:
-        """Busca 4 páginas de 10. Renova o token em 401 e tenta de novo."""
+        """Busca até 4 páginas de 10. Renova o token em 401 e recua de
+        verdade em 429 — se a PRIMEIRA página já vier 429 depois de 3
+        tentativas, desiste do resto em vez de continuar batendo nas outras
+        3 páginas (cada uma com suas próprias 3 tentativas): antes disso
+        cada década podia gastar até 12 chamadas mesmo já sabendo que a
+        cota estava estourada, e com várias décadas em paralelo isso
+        alimentava o próprio 429 (visto em produção: rajada de
+        QUOTA_EXCEEDED)."""
         items: list[dict] = []
         for i in range(4):
             req_offset = offset + (i * 10)
+            got_page = False
             for attempt in range(3):
                 try:
                     token = await self._get_token()
@@ -115,38 +124,46 @@ class SpotifyTrackCatalog(TrackCatalog):
                     )
                     if res.status_code == 200:
                         items.extend(res.json().get("tracks", {}).get("items", []))
+                        got_page = True
                         break
                     if res.status_code == 401:
-                        # token expirado no meio do voo — força renovação e repete
                         print("Spotify 401: renovando token de app")
                         await self._get_token(force=True)
                         continue
                     print(f"Spotify API Error (offset {req_offset}):", res.text)
-                    if res.status_code in (429, 502, 503):
-                        await asyncio.sleep(0.5)
+                    if res.status_code == 429:
+                        retry_after = res.headers.get("Retry-After")
+                        wait = float(retry_after) if retry_after else 0.6 * (2 ** attempt)
+                        await asyncio.sleep(min(wait, 4.0))
+                        continue
+                    if res.status_code in (502, 503):
+                        await asyncio.sleep(0.5 * (attempt + 1))
                         continue
                     break
                 except Exception as e:
                     print("Exception fetching from Spotify:", e)
                     await asyncio.sleep(0.5)
+            if not got_page:
+                # a página falhou mesmo depois de retry — a cota está
+                # apertada agora; corta o prejuízo em vez de insistir nas
+                # próximas páginas.
+                break
         return items
 
-    async def _fetch_from_spotify(self, decade_id: str, user_token: str | None = None) -> list[dict]:
+    async def _fetch_from_spotify(self, decade_id: str, genres: list[str]) -> list[dict]:
         decade_info = DECADE_MAP.get(decade_id)
         if not decade_info:
             return []
 
         years = decade_info['years'].replace(' – ', '-').replace(' \u2013 ', '-').replace(' - ', '-')
         base_query = f"year:{years}"
-        offset = _stable_offset(decade_id, salt=user_token[:8] if user_token else "")
+        genre_sig = ",".join(genres) if genres else ""
+        offset = _stable_offset(decade_id, salt=genre_sig)
 
-        # Consulta preferencial: filtrada pelos gêneros do usuário.
         query, q_offset = base_query, offset
-        if user_token:
-            top_genres = await self._get_user_top_genres(user_token)
-            if top_genres:
-                query = base_query + " " + " OR ".join(f'genre:"{g}"' for g in top_genres)
-                q_offset = 0
+        if genres:
+            query = base_query + " " + " OR ".join(f'genre:"{g}"' for g in genres)
+            q_offset = 0
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             print(f"Spotify Search Query: {query}")
@@ -165,60 +182,77 @@ class SpotifyTrackCatalog(TrackCatalog):
         return await estimate_features(self.groq_api_key, spotify_tracks)
 
     async def tracks_for_decade(self, decade_id: str, user_token: str | None = None) -> list[dict]:
-        cache_key = f"{decade_id}_{user_token[:10] if user_token else 'anon'}"
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            return cached
-            
-        print(f"Buscando faixas reais para a decada {decade_id} no Spotify...", flush=True)
-        items = await self._fetch_from_spotify(decade_id, user_token)
-        if not items:
-            return []
-            
-        print(f"Enriquecendo {len(items)} faixas com Groq...", flush=True)
-        features_map = await self._enrich_with_groq(items)
-        
-        processed = []
-        for t in items:
-            tid = t["id"]
-            feat = features_map.get(tid, DEFAULT_FEATURES)
-            
-            track_dict = {
-                "id": f"{decade_id}-{tid}",
-                "decade": decade_id,
-                "title": t["name"],
-                "artist": ", ".join(a["name"] for a in t["artists"]),
-                "album": t["album"]["name"],
-                "year": int(t["album"]["release_date"][:4]) if len(t["album"].get("release_date", "")) >= 4 else 0,
-                "durationMs": t["duration_ms"],
-                "palette": ["#202020", "#808080"],
-                "features": {
-                    "energy": feat.get("energy", 0.5),
-                    "valence": feat.get("valence", 0.5),
-                    "danceability": feat.get("danceability", 0.5),
-                    "acousticness": feat.get("acousticness", 0.5),
-                    "tempo": 120.0,
-                },
-                "music": {
-                    "root": 0,
-                    "minor": False,
-                    "bpm": 120,
-                    "drums": True
-                },
-                "popularity": feat.get("popularity", 50),
-                "audioUrl": t.get("preview_url"),
-                "coverUrl": t["album"]["images"][0]["url"] if t["album"].get("images") else None,
-                "spotify_uri": t["uri"]
-            }
-            self._all_tracks[track_dict['id']] = track_dict
-            processed.append(track_dict)
-            
-        if not processed:
-            print(f"Nenhuma faixa processada para {decade_id}")
-            return []
-            
-        self._cache.set(cache_key, processed)
-        return processed
+        # Chave por SIGNATURE DE GÊNERO, não por usuário individual — antes
+        # cada usuário tinha sua própria fatia de cache e disparava sua
+        # própria bateria de buscas do zero, mesmo que outro usuário
+        # segundos antes tivesse acabado de buscar a mesma coisa (mesmos
+        # gêneros de destaque, ou nenhum). Isso multiplicava o consumo da
+        # cota do Spotify pelo número de usuários simultâneos — a causa
+        # direta do 429 QUOTA_EXCEEDED visto em produção. Usuários com o
+        # mesmo perfil de gênero (comum — pop/rock/hip-hop dominam) agora
+        # dividem a mesma busca e o mesmo resultado.
+        genres = await self._get_user_top_genres(user_token) if user_token else []
+        genre_sig = ",".join(genres) if genres else "anon"
+        cache_key = f"{decade_id}_{genre_sig}"
+
+        # Serializa buscas concorrentes para a MESMA chave: sem isso, três
+        # pessoas com o mesmo perfil pedindo a mesma década ao mesmo tempo
+        # (cache ainda vazio) disparavam três buscas idênticas em paralelo.
+        lock = self._locks.setdefault(cache_key, asyncio.Lock())
+        async with lock:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+            print(f"Buscando faixas reais para a decada {decade_id} no Spotify...", flush=True)
+            items = await self._fetch_from_spotify(decade_id, genres)
+            if not items:
+                return []
+
+            print(f"Enriquecendo {len(items)} faixas com Groq...", flush=True)
+            features_map = await self._enrich_with_groq(items)
+
+            processed = []
+            for t in items:
+                tid = t["id"]
+                feat = features_map.get(tid, DEFAULT_FEATURES)
+
+                track_dict = {
+                    "id": f"{decade_id}-{tid}",
+                    "decade": decade_id,
+                    "title": t["name"],
+                    "artist": ", ".join(a["name"] for a in t["artists"]),
+                    "album": t["album"]["name"],
+                    "year": int(t["album"]["release_date"][:4]) if len(t["album"].get("release_date", "")) >= 4 else 0,
+                    "durationMs": t["duration_ms"],
+                    "palette": ["#202020", "#808080"],
+                    "features": {
+                        "energy": feat.get("energy", 0.5),
+                        "valence": feat.get("valence", 0.5),
+                        "danceability": feat.get("danceability", 0.5),
+                        "acousticness": feat.get("acousticness", 0.5),
+                        "tempo": 120.0,
+                    },
+                    "music": {
+                        "root": 0,
+                        "minor": False,
+                        "bpm": 120,
+                        "drums": True
+                    },
+                    "popularity": feat.get("popularity", 50),
+                    "audioUrl": t.get("preview_url"),
+                    "coverUrl": t["album"]["images"][0]["url"] if t["album"].get("images") else None,
+                    "spotify_uri": t["uri"]
+                }
+                self._all_tracks[track_dict['id']] = track_dict
+                processed.append(track_dict)
+
+            if not processed:
+                print(f"Nenhuma faixa processada para {decade_id}")
+                return []
+
+            self._cache.set(cache_key, processed)
+            return processed
 
     async def search_specific_track(self, query: str, decade_id: str) -> dict | None:
         token = await self._get_token()
