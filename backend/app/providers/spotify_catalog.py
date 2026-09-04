@@ -1,5 +1,6 @@
 """TrackCatalog Provider real usando Spotify API + Groq."""
 import base64
+import time
 import zlib
 import asyncio
 from pathlib import Path
@@ -18,15 +19,21 @@ CACHE_TTL_SECONDS = 6 * 3600
 CACHE_PATH = Path(__file__).parent.parent / "data" / "cache" / "catalog_cache.json"
 
 
-def _stable_offset(decade_id: str, span: int = 190) -> int:
-    """Offset determinístico por década — substitui random.randint(0, 300).
+def _stable_offset(decade_id: str, salt: str = "", span: int = 190) -> int:
+    """Offset determinístico por década (e opcionalmente por usuário) —
+    substitui random.randint(0, 300).
 
     O aleatório antigo fazia o resultado mudar a cada cold start e podia
     superar o total de resultados de uma busca estreita (gênero + década),
     devolvendo lista vazia sem motivo. crc32 é estável entre processos
     (diferente de hash() de str, que tem seed aleatória por padrão).
-    """
-    return zlib.crc32(decade_id.encode()) % span
+
+    `salt` (fatia do token do usuário) existe para separar o pool de
+    faixas entre usuários que não têm gênero de destaque detectável — sem
+    isso, todo mundo nessa situação cai exatamente na mesma busca
+    "year:198X" sem filtro nenhum, e as mesmas faixas aparecem pra
+    qualquer perfil, disfarçando qualquer diferença na curadoria."""
+    return zlib.crc32(f"{decade_id}:{salt}".encode()) % span
 
 
 class SpotifyTrackCatalog(TrackCatalog):
@@ -43,6 +50,7 @@ class SpotifyTrackCatalog(TrackCatalog):
         self._cache = TTLCache(cache_ttl_seconds, persist_path=CACHE_PATH)
         self._all_tracks: dict[str, dict] = {}
         self._token: str | None = None
+        self._token_exp: float = 0.0
 
         # repovoa o índice de lookup por id com o que sobreviveu no disco,
         # senão get_track() (usado no export de playlist) fica vazio até a
@@ -51,21 +59,30 @@ class SpotifyTrackCatalog(TrackCatalog):
             for t in track_list:
                 self._all_tracks[t["id"]] = t
 
-    async def _get_token(self) -> str:
-        if self._token:
+    async def _get_token(self, force: bool = False) -> str:
+        # O token de client credentials do Spotify expira em ~1h. Antes isto
+        # guardava self._token para sempre e nunca renovava: o processo do
+        # Render fica de pé por horas, então depois da primeira hora TODA
+        # busca voltava 401, items ficava vazio e a década inteira quebrava
+        # com 500 — sintoma "estava funcionando e parou de aparecer".
+        now = time.time()
+        if self._token and not force and now < self._token_exp:
             return self._token
-        
+
         auth_str = f"{self.client_id}:{self.client_secret}"
         b64_auth = base64.b64encode(auth_str.encode()).decode()
-        
-        async with httpx.AsyncClient() as client:
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
             res = await client.post(
                 "https://accounts.spotify.com/api/token",
                 headers={"Authorization": f"Basic {b64_auth}"},
                 data={"grant_type": "client_credentials"}
             )
             res.raise_for_status()
-            self._token = res.json()["access_token"]
+            payload = res.json()
+            self._token = payload["access_token"]
+            # renova 60 s antes de expirar, para não perder uma corrida
+            self._token_exp = time.time() + payload.get("expires_in", 3600) - 60
             return self._token
 
     async def _get_user_top_genres(self, user_token: str) -> list[str]:
@@ -83,55 +100,65 @@ class SpotifyTrackCatalog(TrackCatalog):
                 return list(genres)[:3] # top 3 genres
         return []
 
+    async def _search(self, client: httpx.AsyncClient, query: str, offset: int) -> list[dict]:
+        """Busca 4 páginas de 10. Renova o token em 401 e tenta de novo."""
+        items: list[dict] = []
+        for i in range(4):
+            req_offset = offset + (i * 10)
+            for attempt in range(3):
+                try:
+                    token = await self._get_token()
+                    res = await client.get(
+                        "https://api.spotify.com/v1/search",
+                        headers={"Authorization": f"Bearer {token}"},
+                        params={"q": query, "type": "track", "limit": 10, "offset": req_offset}
+                    )
+                    if res.status_code == 200:
+                        items.extend(res.json().get("tracks", {}).get("items", []))
+                        break
+                    if res.status_code == 401:
+                        # token expirado no meio do voo — força renovação e repete
+                        print("Spotify 401: renovando token de app")
+                        await self._get_token(force=True)
+                        continue
+                    print(f"Spotify API Error (offset {req_offset}):", res.text)
+                    if res.status_code in (429, 502, 503):
+                        await asyncio.sleep(0.5)
+                        continue
+                    break
+                except Exception as e:
+                    print("Exception fetching from Spotify:", e)
+                    await asyncio.sleep(0.5)
+        return items
+
     async def _fetch_from_spotify(self, decade_id: str, user_token: str | None = None) -> list[dict]:
-        token = await self._get_token()
-        
-        offset = _stable_offset(decade_id)
-        
         decade_info = DECADE_MAP.get(decade_id)
         if not decade_info:
             return []
-            
+
         years = decade_info['years'].replace(' – ', '-').replace(' \u2013 ', '-').replace(' - ', '-')
-        
-        genres_query = ""
+        base_query = f"year:{years}"
+        offset = _stable_offset(decade_id, salt=user_token[:8] if user_token else "")
+
+        # Consulta preferencial: filtrada pelos gêneros do usuário.
+        query, q_offset = base_query, offset
         if user_token:
             top_genres = await self._get_user_top_genres(user_token)
             if top_genres:
-                genres_query = " " + " OR ".join(f'genre:"{g}"' for g in top_genres)
-                offset = 0 # If filtering by specific genre, reset offset to find matches
-                
-        query = f"year:{years}{genres_query}"
-        print(f"Spotify Search Query: {query}")
-        
+                query = base_query + " " + " OR ".join(f'genre:"{g}"' for g in top_genres)
+                q_offset = 0
+
         async with httpx.AsyncClient(timeout=15.0) as client:
-            items = []
-            for i in range(4):
-                req_offset = offset + (i * 10)
-                for attempt in range(3):
-                    try:
-                        res = await client.get(
-                            "https://api.spotify.com/v1/search",
-                            headers={"Authorization": f"Bearer {token}"},
-                            params={"q": query, "type": "track", "limit": 10, "offset": req_offset}
-                        )
-                        if res.status_code == 200:
-                            batch = res.json().get("tracks", {}).get("items", [])
-                            items.extend(batch)
-                            break
-                        else:
-                            print(f"Spotify API Error (offset {req_offset}):", res.text)
-                            if res.status_code == 502:
-                                await asyncio.sleep(0.5)
-                                continue
-                            break
-                    except Exception as e:
-                        print("Exception fetching from Spotify:", e)
-                        await asyncio.sleep(0.5)
-            
-            if not items:
-                raise Exception("Spotify returned no items or 502 repeatedly.")
-            
+            print(f"Spotify Search Query: {query}")
+            items = await self._search(client, query, q_offset)
+
+            # gênero + década é um recorte estreito e legitimamente pode não
+            # ter resultado nenhum. Antes isso levantava exceção e derrubava
+            # a década inteira com 500; agora cai para a busca só por ano.
+            if not items and query != base_query:
+                print("Sem resultados com filtro de gênero — repetindo só por ano")
+                items = await self._search(client, base_query, offset)
+
             return items
 
     async def _enrich_with_groq(self, spotify_tracks: list[dict]) -> dict[str, dict]:
@@ -187,7 +214,8 @@ class SpotifyTrackCatalog(TrackCatalog):
             processed.append(track_dict)
             
         if not processed:
-            raise Exception("No tracks were processed successfully.")
+            print(f"Nenhuma faixa processada para {decade_id}")
+            return []
             
         self._cache.set(cache_key, processed)
         return processed
