@@ -89,12 +89,22 @@ export function ArcCarousel() {
     [tracksMap],
   )
 
-  /** O arco mostra as 7 décadas de uma vez, não só a atual — sem isso, seis
-   *  das sete ficariam presas no fallback mock até o usuário girar até lá.
-   *  loadDecadeTracks já ignora décadas já carregadas, então isto é seguro
-   *  de chamar de novo mesmo com o prefetch de vizinhas do goToDecade. */
+  /** O arco mostra a década atual + as duas vizinhas primeiro — as outras
+   *  quatro ainda caem no fallback mock até o usuário girar perto delas,
+   *  mas carregam progressivamente pelo prefetch de vizinhas do
+   *  goToDecade. Antes isto disparava as 7 de uma vez: 140 faixas passando
+   *  por estimativa de features via Groq num único burst, estourando o
+   *  rate limit da chave (visto em produção) e fazendo lotes inteiros
+   *  caírem no fallback neutro — o que também achatava a ordenação por
+   *  afinidade/popularidade, já que todo mundo empatava. */
   useEffect(() => {
-    DECADES.forEach((d) => void loadDecadeTracks(d.id))
+    const idx = DECADES.findIndex((d) => d.id === decade)
+    const ids = [
+      decade,
+      DECADES[(idx + 1) % DECADES.length].id,
+      DECADES[(idx - 1 + DECADES.length) % DECADES.length].id,
+    ]
+    ids.forEach((id) => void loadDecadeTracks(id))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

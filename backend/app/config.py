@@ -29,8 +29,16 @@ class Settings(BaseSettings):
         """FRONTEND_ORIGIN aceita uma ou várias origens separadas por
         vírgula (ex: produção + preview da Vercel + dev local ao mesmo
         tempo). Antes o CORSMiddleware usava allow_origins=['*'], que
-        aceita chamada de qualquer site."""
-        origins = [o.strip() for o in self.FRONTEND_ORIGIN.split(',') if o.strip()]
+        aceita chamada de qualquer site.
+
+        Auto-completa "https://" quando falta o esquema — engano fácil de
+        cometer copiando só o domínio (ex: "meusite.vercel.app" em vez de
+        "https://meusite.vercel.app"), e sem isso o CORSMiddleware nunca
+        bate contra o header Origin real do navegador, que sempre inclui
+        o esquema. Falha nesse caso é silenciosa (o navegador bloqueia sem
+        avisar o backend), então vale mais corrigir do que exigir precisão."""
+        raw = [o.strip() for o in self.FRONTEND_ORIGIN.split(',') if o.strip()]
+        origins = [o if '://' in o else f'https://{o}' for o in raw]
         return origins or ["http://localhost:5173"]
 
     @property
