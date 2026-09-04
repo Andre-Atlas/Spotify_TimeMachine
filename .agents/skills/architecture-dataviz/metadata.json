@@ -1,5 +1,0 @@
-{
-  "name": "architecture-dataviz",
-  "description": "Visualizar a arquitetura e fluxos complexos para evitar explicações repetidas.",
-  "triggers": ["architecture", "dataviz", "diagram", "mermaid", "flow", "pgvector"]
-}

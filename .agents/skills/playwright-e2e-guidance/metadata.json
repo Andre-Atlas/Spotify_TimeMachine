@@ -1,5 +1,0 @@
-{
-  "name": "playwright-e2e-guidance",
-  "description": "Padronizar e aplicar guidelines de testes End-to-End (E2E) imunes a flakiness com Playwright.",
-  "triggers": ["playwright", "e2e", "frontend tests", "ui tests", "pom"]
-}
