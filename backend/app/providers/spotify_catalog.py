@@ -52,6 +52,12 @@ class SpotifyTrackCatalog(TrackCatalog):
         self._token: str | None = None
         self._token_exp: float = 0.0
         self._locks: dict[str, asyncio.Lock] = {}
+        # Disjuntor: quando o Spotify aplica 429, guardamos até quando não
+        # adianta nem tentar. Sem isso, cada requisição nova (de qualquer
+        # usuário, minutos depois) tentava do zero e tomava 429 de novo —
+        # o cache só guarda sucesso, nunca falha, então nada impedia a
+        # próxima tentativa de repetir o mesmo erro indefinidamente.
+        self._blocked_until: float = 0.0
 
         # repovoa o índice de lookup por id com o que sobreviveu no disco,
         # senão get_track() (usado no export de playlist) fica vazio até a
@@ -102,19 +108,30 @@ class SpotifyTrackCatalog(TrackCatalog):
         return []
 
     async def _search(self, client: httpx.AsyncClient, query: str, offset: int) -> list[dict]:
-        """Busca até 4 páginas de 10. Renova o token em 401 e recua de
-        verdade em 429 — se a PRIMEIRA página já vier 429 depois de 3
-        tentativas, desiste do resto em vez de continuar batendo nas outras
-        3 páginas (cada uma com suas próprias 3 tentativas): antes disso
-        cada década podia gastar até 12 chamadas mesmo já sabendo que a
-        cota estava estourada, e com várias décadas em paralelo isso
-        alimentava o próprio 429 (visto em produção: rajada de
-        QUOTA_EXCEEDED)."""
+        """Busca até 4 páginas de 10.
+
+        Disjuntor: se já estamos em cooldown (self._blocked_until no
+        futuro), nem tenta — volta [] na hora, sem gastar uma chamada
+        sequer. Sem isso, cada requisição nova continuava tentando do zero
+        e tomando 429 de novo, minutos depois de a anterior já ter falhado
+        (visto em produção: o mesmo offset levando 429 repetidamente por
+        mais de 90s, em requisições completamente separadas).
+
+        No primeiro 429, respeita o Retry-After da Spotify como cooldown
+        GLOBAL (não só desta chamada) e desiste imediatamente — nada de
+        tentar de novo dentro do mesmo request, que só adia o problema
+        sem dar tempo real de recuperação pro lado do Spotify.
+        """
+        if time.time() < self._blocked_until:
+            remaining = round(self._blocked_until - time.time())
+            print(f"Spotify em cooldown por mais {remaining}s — pulando busca real")
+            return []
+
         items: list[dict] = []
         for i in range(4):
             req_offset = offset + (i * 10)
             got_page = False
-            for attempt in range(3):
+            for attempt in range(2):
                 try:
                     token = await self._get_token()
                     res = await client.get(
@@ -133,9 +150,11 @@ class SpotifyTrackCatalog(TrackCatalog):
                     print(f"Spotify API Error (offset {req_offset}):", res.text)
                     if res.status_code == 429:
                         retry_after = res.headers.get("Retry-After")
-                        wait = float(retry_after) if retry_after else 0.6 * (2 ** attempt)
-                        await asyncio.sleep(min(wait, 4.0))
-                        continue
+                        cooldown = float(retry_after) if retry_after else 30.0
+                        cooldown = max(5.0, min(cooldown, 1800.0))  # entre 5s e 30min
+                        self._blocked_until = time.time() + cooldown
+                        print(f"Spotify 429 — ligando disjuntor por {cooldown:.0f}s")
+                        return items  # desiste de vez, não só desta página
                     if res.status_code in (502, 503):
                         await asyncio.sleep(0.5 * (attempt + 1))
                         continue
@@ -144,6 +163,7 @@ class SpotifyTrackCatalog(TrackCatalog):
                     print("Exception fetching from Spotify:", e)
                     await asyncio.sleep(0.5)
             if not got_page:
+
                 # a página falhou mesmo depois de retry — a cota está
                 # apertada agora; corta o prejuízo em vez de insistir nas
                 # próximas páginas.
