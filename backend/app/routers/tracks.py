@@ -2,12 +2,30 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 import httpx
 from app.deps import get_catalog
+from app.providers.mock import MockTrackCatalog
 
 router = APIRouter(prefix="/tracks", tags=["tracks"])
 
+# Instância única reaproveitada entre requisições — evita reler o JSON do
+# seed a cada 404, e serve de fallback de lookup para ids que vieram do
+# catálogo local quando o Spotify estava em cooldown (ver routers/decades.py).
+# O catálogo real registrado globalmente no app (SpotifyTrackCatalog) nunca
+# viu esses ids, porque o fallback de decades.py cria um MockTrackCatalog()
+# só para aquela resposta e descarta — sem isso, /audio e /cover devolviam
+# 404 para toda faixa que a lista principal já tinha mostrado com sucesso.
+_mock_fallback = MockTrackCatalog()
+
+
+def _lookup_track(catalog, track_id: str) -> dict | None:
+    track = catalog.get_track(track_id)
+    if track:
+        return track
+    return _mock_fallback.get_track(track_id)
+
+
 @router.get("/{track_id}/audio")
 async def get_track_audio(track_id: str, catalog = Depends(get_catalog)):
-    track = catalog.get_track(track_id)
+    track = _lookup_track(catalog, track_id)
     if not track:
         raise HTTPException(404, "Track not found")
         
@@ -28,7 +46,7 @@ async def get_track_audio(track_id: str, catalog = Depends(get_catalog)):
 
 @router.get("/{track_id}/cover")
 async def get_track_cover(track_id: str, catalog = Depends(get_catalog)):
-    track = catalog.get_track(track_id)
+    track = _lookup_track(catalog, track_id)
     if not track:
         raise HTTPException(404, "Track not found")
         

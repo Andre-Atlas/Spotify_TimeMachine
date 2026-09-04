@@ -3,6 +3,7 @@ from pydantic import BaseModel
 import httpx
 
 from app.deps import get_catalog
+from app.routers.tracks import _lookup_track
 
 router = APIRouter(prefix="/playlists", tags=["playlists"])
 
@@ -18,14 +19,15 @@ async def export_playlist(request: Request, payload: ExportRequest, catalog = De
         
     token = auth_header.split(" ")[1]
 
-    # Antes disso forçava sempre MockTrackCatalog() aqui, então IDs vindos
-    # do catálogo real do Spotify (ex: "80s-3xK9...") nunca batiam com os
-    # IDs do seed mock ("80s-0") e o export quebrava com 404 sempre que o
-    # app estava rodando em modo real. get_track() já existe nos dois
-    # providers (mock e Spotify) — usar o catálogo injetado de verdade.
+    # get_track() sozinho não basta quando /v1/decades/{id}/tracks serviu a
+    # lista a partir do catálogo local de fallback (Spotify em cooldown ou
+    # indisponível — ver decades.py): esses ids nunca chegam ao catálogo
+    # real registrado no app, então catalog.get_track() não os acha.
+    # _lookup_track() cai no catálogo mock antes de desistir — mesma
+    # correção aplicada em routers/tracks.py para /audio e /cover.
     local_tracks = []
     for tid in payload.trackIds:
-        t = catalog.get_track(tid)
+        t = _lookup_track(catalog, tid)
         if t:
             local_tracks.append(t)
 
